@@ -1,3 +1,11 @@
+(defvar mumps-mode-syntax-table
+  (let ((table (make-syntax-table)))
+    ;; Standard ; comments
+    (modify-syntax-entry ?\; "< b" table)
+    (modify-syntax-entry ?\n "> b" table)
+    table))
+
+
 (defun mumps--go-while (expr)
   (while (looking-at expr)
 	(forward-char 1)))
@@ -8,7 +16,6 @@
   (save-excursion
 	(beginning-of-line)
 	(mumps--go-while "[ \t.]")
-	(mumps--go-while "[ ]")
 	(pcase (char-after)
 	  (?;
 	   (delete-char 1)
@@ -128,6 +135,7 @@
 ;;;###autoload
 (define-derived-mode mumps-mode prog-mode "mumps mode"
   "Mode for MUMPS programming language"
+  :syntax-table mumps-mode-syntax-table
   (setq-local font-lock-defaults '(mumps-font-lock-keywords))
   (setq-local comment-start "; ")
   (setq-local comment-end "")
@@ -141,6 +149,90 @@
 				("\\.inc$" . mumps-mode)
 				("\\.mac$" . mumps-mode))
 			  auto-mode-alist))
+
+
+(defun mumps--parse-function-call-components (string)
+  """
+returns (list err notation container member)
+
+  notation:
+   - object-script
+   - mumps
+"""
+  (cond
+   ;; ObjectScript syntax: class.method
+   ((string-match "^\\([a-zA-Z0-9][a-zA-Z0-9.]*\\)\\.\\([a-zA-Z0-9]+\\)$" string)
+    (let ((class (match-string 1 string))    ; container
+          (method (match-string 2 string)))  ; member
+      (list nil "object-script" class method)))
+   
+   ;; Traditional MUMPS syntax: $$tag^routine
+   ((string-match "^\\$\\$\\([a-zA-Z0-9]+\\)\\^\\([a-zA-Z0-9]+\\)$" string)
+    (let ((tag (match-string 2 string))      ; member
+          (routine (match-string 3 string))) ; container
+      (list nil "mumps" routine tag)))
+   
+   ;; Traditional MUMPS syntax: tag^routine (without $$ prefix)
+   ((string-match "^\\([a-zA-Z0-9]+\\)\\^\\([a-zA-Z0-9]+\\)$" string)
+    (let ((tag (match-string 1 string))      ; member
+          (routine (match-string 2 string))) ; container
+      (list nil "mumps" routine tag)))
+
+   ;; Simple member only
+   ((string-match "^\\$\\$\\([a-zA-Z0-9]+\\)$" string)
+    (let ((member (match-string 1 string)))  ; member only, no container
+      (list nil nil nil member)))
+   
+   ;; Simple member only (without $$ prefix)
+   ((string-match "^\\([a-zA-Z0-9]+\\)$" string)
+    (let ((member (match-string 1 string)))  ; member only, no container
+      (list nil nil nil member)))
+   
+   ;; Invalid syntax that doesn't match any pattern
+   (t (list nil nil nil nil))))
+
+
+(defun mumps--extract-components-at-cursor ()
+  (save-excursion
+    (let* ((current-word (thing-at-point 'word))
+           (line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+           words
+           target-word)
+      
+      ;; Split line by spaces, tabs, and other common delimiters
+      (setq words (split-string line "[ \t,=]+" t))
+      
+      ;; Find which word contains the cursor
+      (dolist (word words)
+        (let ((word-start (string-match (regexp-quote word) line))
+              (word-end))
+          (when word-start
+            (setq word-end (+ word-start (length word)))
+            (when (and (>= (point) (+ (line-beginning-position) word-start))
+                       (<= (point) (+ (line-beginning-position) word-end)))
+              (setq target-word word)))))
+      
+      ;; Extract function name before parentheses
+      (if target-word
+          (progn
+            (when (string-match "^'?\\([a-zA-Z0-9$^.]+\\)" target-word)
+              (match-string 1 target-word)))
+        ""))))
+
+
+(defun mumps-go-to-def ()
+  (interactive)
+  (let* (filename)
+	(seq-let (err notation container member) (mumps--parse-function-call-components (mumps--extract-components-at-cursor))
+	  ;; set filename regarding a notation
+	  (pcase notation
+		("mumps"
+		 (setq filename (concat container ".mac")))
+		(_
+		 (setq filename (buffer-file-name))))
+	  (find-file filename)
+	  (beginning-of-buffer)
+	  (search-forward-regexp (concat "^" member)))))
 
 
 (provide 'mumps-mode)
